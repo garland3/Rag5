@@ -33,6 +33,7 @@ async def ingest_document(
     content_type: str,
     content: bytes,
     metadata: dict | None = None,
+    corpus_id: str | None = None,
 ) -> str:
     text = extract_text(content, content_type, filename)
     chunks = chunk_text(text)
@@ -44,6 +45,7 @@ async def ingest_document(
             "content_type": content_type,
             "chunk_count": len(chunks),
             "metadata": metadata or {},
+            "corpus_id": ObjectId(corpus_id) if corpus_id else None,
         }
     )
     doc_id = doc_result.inserted_id
@@ -61,6 +63,7 @@ async def ingest_document(
                 "embedding": embeddings[j],
                 "chunk_index": i + j,
                 "metadata": {"source": filename},
+                "corpus_id": ObjectId(corpus_id) if corpus_id else None,
             }
             for j in range(len(batch))
         ]

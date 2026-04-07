@@ -3,6 +3,9 @@ from pydantic import BaseModel, Field
 
 class QueryRequest(BaseModel):
     question: str
+    corpus_id: str = Field(
+        description="Corpus identifier used to scope retrieval to a single tenant corpus.",
+    )
     top_k: int = 5
     document_ids: list[str] = Field(default_factory=list)
     retriever: str | None = Field(

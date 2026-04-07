@@ -38,6 +38,7 @@ class BaseRetriever(ABC):
         query: str,
         top_k: int = 5,
         document_ids: list[str] | None = None,
+        corpus_id: str | None = None,
     ) -> list[dict]:
         ...
 
@@ -54,8 +55,9 @@ class VectorRetriever(BaseRetriever):
         query: str,
         top_k: int = 5,
         document_ids: list[str] | None = None,
+        corpus_id: str | None = None,
     ) -> list[dict]:
-        return await vector_search(db, query, top_k=top_k, document_ids=document_ids)
+        return await vector_search(db, query, top_k=top_k, document_ids=document_ids, corpus_id=corpus_id)
 
 
 async def vector_search(
@@ -63,6 +65,7 @@ async def vector_search(
     query: str,
     top_k: int = 5,
     document_ids: list[str] | None = None,
+    corpus_id: str | None = None,
 ) -> list[dict]:
     query_embedding = await embed_query(query)
 
@@ -87,11 +90,13 @@ async def vector_search(
         },
     ]
 
+    filters: list[dict] = []
     if document_ids:
-        oid_filter = [ObjectId(did) for did in document_ids]
-        pipeline[0]["$vectorSearch"]["filter"] = {
-            "document_id": {"$in": oid_filter}
-        }
+        filters.append({"document_id": {"$in": [ObjectId(did) for did in document_ids]}})
+    if corpus_id:
+        filters.append({"corpus_id": ObjectId(corpus_id)})
+    if filters:
+        pipeline[0]["$vectorSearch"]["filter"] = {"$and": filters} if len(filters) > 1 else filters[0]
 
     chunks: list[dict] = []
     async for doc in db["chunks"].aggregate(pipeline):
@@ -114,8 +119,9 @@ class KeywordRetriever(BaseRetriever):
         query: str,
         top_k: int = 5,
         document_ids: list[str] | None = None,
+        corpus_id: str | None = None,
     ) -> list[dict]:
-        return await keyword_search(db, query, top_k=top_k, document_ids=document_ids)
+        return await keyword_search(db, query, top_k=top_k, document_ids=document_ids, corpus_id=corpus_id)
 
 
 async def keyword_search(
@@ -123,6 +129,7 @@ async def keyword_search(
     query: str,
     top_k: int = 5,
     document_ids: list[str] | None = None,
+    corpus_id: str | None = None,
 ) -> list[dict]:
     """Full-text keyword search using MongoDB $text index on the chunks collection.
 
@@ -131,9 +138,9 @@ async def keyword_search(
     """
     text_filter: dict = {"$text": {"$search": query}}
     if document_ids:
-        text_filter["document_id"] = {
-            "$in": [ObjectId(did) for did in document_ids]
-        }
+        text_filter["document_id"] = {"$in": [ObjectId(did) for did in document_ids]}
+    if corpus_id:
+        text_filter["corpus_id"] = ObjectId(corpus_id)
 
     cursor = (
         db["chunks"]
@@ -169,13 +176,14 @@ class HybridRetriever(BaseRetriever):
         query: str,
         top_k: int = 5,
         document_ids: list[str] | None = None,
+        corpus_id: str | None = None,
     ) -> list[dict]:
         # Fetch more per-method so fusion has enough candidates
         fetch_k = top_k * 3
 
         vec_results, kw_results = await asyncio.gather(
-            vector_search(db, query, top_k=fetch_k, document_ids=document_ids),
-            keyword_search(db, query, top_k=fetch_k, document_ids=document_ids),
+            vector_search(db, query, top_k=fetch_k, document_ids=document_ids, corpus_id=corpus_id),
+            keyword_search(db, query, top_k=fetch_k, document_ids=document_ids, corpus_id=corpus_id),
         )
 
         return _reciprocal_rank_fusion(
@@ -235,12 +243,13 @@ class MultiQueryRetriever(BaseRetriever):
         query: str,
         top_k: int = 5,
         document_ids: list[str] | None = None,
+        corpus_id: str | None = None,
     ) -> list[dict]:
         rewrites = await _generate_query_rewrites(query, m=self.num_rewrites)
         all_queries = [query] + rewrites  # always include original
 
         tasks = [
-            self.sub_retriever.retrieve(db, q, top_k=top_k, document_ids=document_ids)
+            self.sub_retriever.retrieve(db, q, top_k=top_k, document_ids=document_ids, corpus_id=corpus_id)
             for q in all_queries
         ]
         ranked_lists = await asyncio.gather(*tasks)
@@ -315,6 +324,7 @@ class AgentRetriever(BaseRetriever):
         query: str,
         top_k: int = 5,
         document_ids: list[str] | None = None,
+        corpus_id: str | None = None,
     ) -> list[dict]:
         all_chunks: list[dict] = []
         seen_ids: set[str] = set()
@@ -329,7 +339,7 @@ class AgentRetriever(BaseRetriever):
             )
 
             new_chunks = await self.sub_retriever.retrieve(
-                db, current_query, top_k=top_k, document_ids=document_ids
+                db, current_query, top_k=top_k, document_ids=document_ids, corpus_id=corpus_id
             )
 
             for c in new_chunks:

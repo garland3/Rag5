@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -9,6 +9,8 @@ from app.models.query import QueryResponse
 
 @pytest.fixture
 def mock_db():
+    from unittest.mock import MagicMock
+
     return MagicMock()
 
 
@@ -34,7 +36,7 @@ async def test_query_endpoint(client, mock_db):
         async with client as c:
             response = await c.post(
                 "/api/v1/query",
-                json={"question": "What is the meaning of life?"},
+                json={"question": "What is the meaning of life?", "corpus_id": "507f1f77bcf86cd799439011"},
             )
 
     assert response.status_code == 200

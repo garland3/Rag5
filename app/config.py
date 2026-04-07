@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     chunk_size: int = 1000
     chunk_overlap: int = 200
     top_k: int = 5
+    retriever: str = "vector"  # vector | keyword | hybrid | multi_query | agent
+    multi_query_rewrites: int = 3
+    agent_max_iterations: int = 3
 
     model_config = {"env_file": ".env"}
 

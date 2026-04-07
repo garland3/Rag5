@@ -18,4 +18,5 @@ async def query(
         question=request.question,
         top_k=request.top_k,
         document_ids=request.document_ids or None,
+        retriever_name=request.retriever,
     )

@@ -1,7 +1,8 @@
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from app.config import settings
 from app.core.generator import generate_answer
-from app.core.retriever import vector_search
+from app.core.retriever import get_retriever
 from app.models.query import QueryResponse, SourceChunk
 
 
@@ -10,8 +11,19 @@ async def query_rag(
     question: str,
     top_k: int = 5,
     document_ids: list[str] | None = None,
+    retriever_name: str | None = None,
 ) -> QueryResponse:
-    chunks = await vector_search(db, question, top_k=top_k, document_ids=document_ids)
+    name = retriever_name or settings.retriever
+
+    # Build kwargs for retrievers that accept extra config
+    kwargs: dict = {}
+    if name == "multi_query":
+        kwargs["num_rewrites"] = settings.multi_query_rewrites
+    elif name == "agent":
+        kwargs["max_iterations"] = settings.agent_max_iterations
+
+    retriever = get_retriever(name, **kwargs)
+    chunks = await retriever.retrieve(db, question, top_k=top_k, document_ids=document_ids)
 
     if not chunks:
         return QueryResponse(

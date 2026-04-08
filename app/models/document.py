@@ -17,6 +17,7 @@ class DocumentResponse(BaseModel):
     content_type: str
     uploaded_at: datetime
     chunk_count: int
+    corpus_id: str
     metadata: dict = Field(default_factory=dict)
 
 

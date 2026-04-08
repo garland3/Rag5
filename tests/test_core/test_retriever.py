@@ -183,7 +183,7 @@ async def test_agent_retriever_refines_query():
     mock_sub = MagicMock(spec=BaseRetriever)
     call_count = [0]
 
-    async def fake_retrieve(db, query, top_k=5, document_ids=None):
+    async def fake_retrieve(db, query, top_k=5, document_ids=None, corpus_id=None):
         call_count[0] += 1
         return [{"_id": str(call_count[0]), "text": f"chunk {call_count[0]}", "document_id": "d1", "score": 0.5}]
 

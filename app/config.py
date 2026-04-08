@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     retriever: str = "vector"  # vector | keyword | hybrid | multi_query | agent
     multi_query_rewrites: int = 3
     agent_max_iterations: int = 3
+    debug: bool = False
+    testuser: str = "bob@test.com"
+    proxy_user_header: str = "x-forwarded-user"
 
     model_config = {"env_file": ".env"}
 

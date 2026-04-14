@@ -44,12 +44,44 @@ npm run build   # outputs to frontend/build/
 | GET | `/health` | Health check |
 | POST | `/api/v1/corpora` | Create a corpus (tenant boundary) |
 | GET | `/api/v1/corpora` | List corpora you can read |
-| POST | `/api/v1/documents?corpus_id=<id>` | Upload a document into a corpus |
+| POST | `/api/v1/documents?corpus_id=<id>` | Upload + synchronously ingest a document (legacy) |
+| POST | `/api/v1/documents/upload?corpus_id=<id>` | **Queue** a document for async ingest via Prefect — returns 202 + job id |
 | GET | `/api/v1/documents` | List documents in accessible corpora |
 | GET | `/api/v1/documents/{id}` | Get document details |
 | DELETE | `/api/v1/documents/{id}` | Delete a document |
+| GET | `/api/v1/jobs` | List ingest jobs across accessible corpora (filter with `corpus_id`, `status`) |
+| GET | `/api/v1/jobs/{id}` | Get status of a single ingest job |
 | POST | `/api/v1/query` | Ask a question (RAG), `corpus_id` required for tenant isolation |
 | POST | `/api/v1/query/stream` | **Streaming** RAG query via SSE with real-time status updates |
+
+## Document Upload & Ingestion Orchestration (Prefect)
+
+The multi-tenant upload path uses **Prefect** as the orchestration engine so
+uploads don't block while parsing, chunking, and embedding are happening.
+
+Typical flow:
+
+1. `POST /api/v1/corpora` — a tenant creates a corpus they own.
+2. `POST /api/v1/documents/upload?corpus_id=<id>` — users upload files as
+   `multipart/form-data`. The API:
+   - checks write access on the corpus
+   - writes the raw bytes to `UPLOAD_STORAGE_DIR/<stage-id>/<filename>`
+   - inserts a record into the `ingest_jobs` Mongo collection with
+     `status=queued`
+   - submits the `ingest-document-flow` Prefect flow as a background task
+   - returns `202 Accepted` with the job id
+3. The Prefect flow runs in-process (no external worker required):
+   - transitions the job to `running`
+   - parses/chunks/embeds the staged file via the existing ingest pipeline
+   - writes `documents` + `chunks` to Mongo
+   - marks the job `completed` (or `failed` with an error message)
+4. Clients poll `GET /api/v1/jobs/{id}` for status until it reaches
+   `completed` or `failed`. The RAG query endpoint becomes available for
+   the new content as soon as the job completes.
+
+Because the flow is a standard Prefect `@flow`, you can optionally point
+`PREFECT_API_URL` at a [Prefect server](https://docs.prefect.io) to get the
+web UI, retries, alerting, and scheduling for free — no code changes.
 
 ### Streaming Search (`/api/v1/query/stream`)
 
@@ -89,6 +121,8 @@ Without DEBUG mode, the API also accepts `x-user-id` and `x-user-groups` headers
 | `DEBUG` | `false` | Bypass auth, use TESTUSER |
 | `TESTUSER` | `bob@test.com` | User identity when DEBUG=true |
 | `PROXY_USER_HEADER` | `x-forwarded-user` | Header from reverse proxy with username |
+| `UPLOAD_STORAGE_DIR` | `/tmp/rag5_uploads` | Local staging directory for files awaiting ingest |
+| `PREFECT_API_URL` | _(unset)_ | Optional Prefect server URL — enables the flow-run UI |
 
 ## Docker
 

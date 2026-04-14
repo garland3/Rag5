@@ -59,7 +59,12 @@ npm run build   # outputs to frontend/build/
 The multi-tenant upload path uses **Prefect** as the orchestration engine so
 uploads don't block while parsing, chunking, and embedding are happening.
 
-Typical flow:
+> **Full Prefect guide:** [`docs/prefect.md`](docs/prefect.md) — covers
+> the in-process vs. remote-worker modes, registering a deployment, and
+> running a Prefect worker in Kubernetes (with manifests under
+> [`deploy/k8s/`](deploy/k8s/)).
+
+### Request lifecycle
 
 1. `POST /api/v1/corpora` — a tenant creates a corpus they own.
 2. `POST /api/v1/documents/upload?corpus_id=<id>` — users upload files as
@@ -70,9 +75,10 @@ Typical flow:
      uploaded filename)
    - inserts a record into the `ingest_jobs` Mongo collection with
      `status=queued`
-   - submits the `ingest-document-flow` Prefect flow as a background task
+   - dispatches the `ingest-document-flow` Prefect flow (see the two modes
+     below)
    - returns `202 Accepted` with the job id
-3. The Prefect flow runs in-process (no external worker required):
+3. The Prefect flow executes:
    - transitions the job to `running`
    - parses/chunks/embeds the staged file via the existing ingest pipeline
    - writes `documents` + `chunks` to Mongo
@@ -81,9 +87,50 @@ Typical flow:
    `completed` or `failed`. The RAG query endpoint becomes available for
    the new content as soon as the job completes.
 
-Because the flow is a standard Prefect `@flow`, you can optionally point
-`PREFECT_API_URL` at a [Prefect server](https://docs.prefect.io) to get the
-web UI, retries, alerting, and scheduling for free — no code changes.
+### Two execution modes
+
+| Mode | When to use | How to enable |
+|------|-------------|---------------|
+| **In-process** (default) | Local dev, single-node deploys | Do nothing. The flow runs in the FastAPI event loop via `asyncio.create_task`. No Prefect server or worker required. |
+| **Remote worker** | Production, Kubernetes, scale-out | Point `PREFECT_API_URL` at a Prefect server, register the flow with `scripts/deploy_prefect_flow.py`, and set `PREFECT_INGEST_DEPLOYMENT=ingest-document-flow/<name>`. A Prefect worker polling the same work pool then executes each flow run. |
+
+Even in in-process mode, setting `PREFECT_API_URL` at a
+[Prefect server](https://docs.prefect.io) gives you the web UI, live
+run logs, and alerting for free — no code changes. The remote mode
+additionally moves the CPU work off the API replicas and lets you
+scale ingest capacity independently. See
+[`docs/prefect.md`](docs/prefect.md) for step-by-step setup.
+
+### Quick start — in-process (default)
+
+```bash
+# Nothing to configure. Just run the API.
+uvicorn app.main:app --reload
+```
+
+### Quick start — remote worker (Kubernetes)
+
+```bash
+# 1. Start a Prefect server (or use Prefect Cloud)
+prefect server start
+
+# 2. Point the API at it
+export PREFECT_API_URL=http://127.0.0.1:4200/api
+
+# 3. Create the work pool and register the deployment
+prefect work-pool create --type process rag5-pool
+python scripts/deploy_prefect_flow.py --name k8s --work-pool rag5-pool
+
+# 4. Tell the API to dispatch remotely
+export PREFECT_INGEST_DEPLOYMENT=ingest-document-flow/k8s
+
+# 5. Start a worker (locally, or see deploy/k8s/ for the K8s manifests)
+prefect worker start --pool rag5-pool
+```
+
+For the full Kubernetes walkthrough including Deployment manifests,
+PVC setup, and troubleshooting, see [`docs/prefect.md`](docs/prefect.md)
+and [`deploy/k8s/README.md`](deploy/k8s/README.md).
 
 ### Streaming Search (`/api/v1/query/stream`)
 
@@ -125,6 +172,7 @@ Without DEBUG mode, the API also accepts `x-user-id` and `x-user-groups` headers
 | `PROXY_USER_HEADER` | `x-forwarded-user` | Header from reverse proxy with username |
 | `UPLOAD_STORAGE_DIR` | `/tmp/rag5_uploads` | Local staging directory for files awaiting ingest |
 | `PREFECT_API_URL` | _(unset)_ | Optional Prefect server URL — enables the flow-run UI |
+| `PREFECT_INGEST_DEPLOYMENT` | _(unset)_ | Optional `flow/deployment` name. When set, the API dispatches ingest jobs to a Prefect deployment instead of running the flow in-process — required for the Kubernetes worker setup. See [`docs/prefect.md`](docs/prefect.md). |
 
 ## Docker
 

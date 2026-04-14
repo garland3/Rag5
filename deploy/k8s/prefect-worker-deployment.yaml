@@ -1,0 +1,87 @@
+# Runs a Prefect worker that polls the `rag5-pool` work pool and
+# executes flow runs created by the Rag5 API. Each pod stays up long-
+# term — it is NOT a one-off Job. Scale replicas to run multiple
+# workers in parallel.
+#
+# Prerequisites:
+#   * namespace.yaml applied
+#   * prefect-worker-secret.yaml applied (contains PREFECT_API_URL etc.)
+#   * A shared PVC if the API and worker live in different pods — see
+#     `upload-staging-pvc.yaml` in this directory.
+#   * The work pool already exists (see docs/prefect.md §3).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prefect-worker
+  namespace: rag5
+  labels:
+    app.kubernetes.io/name: prefect-worker
+    app.kubernetes.io/part-of: rag5
+spec:
+  replicas: 1
+  strategy:
+    # Workers are stateful polling processes — do a rolling restart one
+    # pod at a time so in-flight flow runs aren't abruptly killed.
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prefect-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: prefect-worker
+        app.kubernetes.io/part-of: rag5
+    spec:
+      # NOTE: the worker image MUST contain the `app/` source tree so
+      # it can import `app.services.prefect_flows.ingest_document_flow`.
+      # The default Rag5 Dockerfile already ships it — reuse that image
+      # for the worker and override the command.
+      containers:
+        - name: worker
+          image: ghcr.io/your-org/rag5:latest
+          imagePullPolicy: IfNotPresent
+          command: ["prefect", "worker", "start"]
+          args:
+            - "--pool"
+            - "rag5-pool"
+            - "--name"
+            - "$(POD_NAME)"
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: UPLOAD_STORAGE_DIR
+              value: "/var/rag5/uploads"
+          envFrom:
+            - secretRef:
+                name: prefect-worker-env
+          volumeMounts:
+            - name: upload-staging
+              mountPath: /var/rag5/uploads
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          readinessProbe:
+            # The worker process opens a local heartbeat loop; use a
+            # simple process liveness check via `pgrep`.
+            exec:
+              command: ["pgrep", "-f", "prefect worker start"]
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          livenessProbe:
+            exec:
+              command: ["pgrep", "-f", "prefect worker start"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: upload-staging
+          persistentVolumeClaim:
+            claimName: rag5-upload-staging

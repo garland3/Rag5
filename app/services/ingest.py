@@ -1,3 +1,4 @@
+import asyncio
 import io
 
 from bson import ObjectId
@@ -27,6 +28,14 @@ def extract_text(content: bytes, content_type: str, filename: str) -> str:
     return content.decode("utf-8", errors="replace")
 
 
+def _extract_and_chunk(
+    content: bytes, content_type: str, filename: str
+) -> list[str]:
+    """Synchronous helper: parse + chunk. Safe to run in a worker thread."""
+    text = extract_text(content, content_type, filename)
+    return chunk_text(text)
+
+
 async def ingest_document(
     db: AsyncIOMotorDatabase,
     filename: str,
@@ -35,8 +44,12 @@ async def ingest_document(
     metadata: dict | None = None,
     corpus_id: str | None = None,
 ) -> str:
-    text = extract_text(content, content_type, filename)
-    chunks = chunk_text(text)
+    # Parsing PDFs/DOCX and splitting text is CPU-bound and blocking, so
+    # offload it to a worker thread to keep the FastAPI event loop free
+    # for other requests (including serving RAG queries concurrently).
+    chunks = await asyncio.to_thread(
+        _extract_and_chunk, content, content_type, filename
+    )
 
     # Store document metadata
     doc_result = await db["documents"].insert_one(

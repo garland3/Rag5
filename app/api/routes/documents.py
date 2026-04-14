@@ -4,8 +4,10 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.api.deps import get_current_user, get_database
 from app.models.document import DocumentResponse
+from app.models.job import IngestJobResponse
 from app.services.authz import UserContext, ensure_corpus_access, list_accessible_corpora
 from app.services.ingest import ingest_document
+from app.services.job_queue import enqueue_ingest_job
 
 router = APIRouter()
 
@@ -17,6 +19,11 @@ async def upload_document(
     db: AsyncIOMotorDatabase = Depends(get_database),
     user: UserContext = Depends(get_current_user),
 ):
+    """Synchronously ingest a document (legacy path).
+
+    Prefer ``POST /api/v1/documents/upload`` which queues the ingest
+    through Prefect and returns immediately with a job id.
+    """
     await ensure_corpus_access(db, user, corpus_id, mode="write")
 
     content = await file.read()
@@ -30,6 +37,41 @@ async def upload_document(
 
     doc = await db["documents"].find_one({"_id": ObjectId(doc_id)})
     return _doc_to_response(doc)
+
+
+@router.post(
+    "/documents/upload",
+    response_model=IngestJobResponse,
+    status_code=202,
+)
+async def queue_document_upload(
+    file: UploadFile,
+    corpus_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_database),
+    user: UserContext = Depends(get_current_user),
+):
+    """Stage a document and queue it for ingestion via Prefect.
+
+    Returns a 202 with an ``IngestJobResponse``; poll
+    ``GET /api/v1/jobs/{id}`` for progress. The uploaded bytes are
+    written to the configured staging directory and handed off to the
+    ``ingest-document-flow`` Prefect flow for processing.
+    """
+    await ensure_corpus_access(db, user, corpus_id, mode="write")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    job = await enqueue_ingest_job(
+        db,
+        corpus_id=corpus_id,
+        filename=file.filename or "untitled",
+        content_type=file.content_type or "application/octet-stream",
+        content=content,
+        created_by=user.user_id,
+    )
+    return job
 
 
 @router.get("/documents", response_model=list[DocumentResponse])

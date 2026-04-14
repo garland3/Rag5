@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import corpora, documents, health, query
+from app.api.routes import corpora, documents, health, jobs, query
 from app.api.routes import query_stream
 from app.core.database import close_client
 
@@ -27,5 +27,6 @@ app.add_middleware(
 app.include_router(health.router, tags=["health"])
 app.include_router(corpora.router, prefix="/api/v1", tags=["corpora"])
 app.include_router(documents.router, prefix="/api/v1", tags=["documents"])
+app.include_router(jobs.router, prefix="/api/v1", tags=["jobs"])
 app.include_router(query.router, prefix="/api/v1", tags=["query"])
 app.include_router(query_stream.router, prefix="/api/v1", tags=["query"])

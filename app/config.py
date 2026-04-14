@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     testuser: str = "bob@test.com"
     proxy_user_header: str = "x-forwarded-user"
 
+    # Prefect orchestration + upload staging
+    upload_storage_dir: str = "/tmp/rag5_uploads"
+
     model_config = {"env_file": ".env"}
 
 

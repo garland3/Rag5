@@ -20,6 +20,12 @@ class Settings(BaseSettings):
 
     # Prefect orchestration + upload staging
     upload_storage_dir: str = "/tmp/rag5_uploads"
+    # When set, the API dispatches ingest jobs through a Prefect deployment
+    # (e.g. "ingest-document-flow/k8s") instead of running the flow in-process.
+    # A Prefect worker polling the deployment's work pool — typically a
+    # Kubernetes Deployment — then executes the ingest. Leave unset to keep
+    # the default in-process mode used for local development.
+    prefect_ingest_deployment: str = ""
 
     model_config = {"env_file": ".env"}
 

@@ -1,0 +1,73 @@
+# Reference API deployment, included so you can see how the API pod
+# and the worker pod share the same upload-staging PVC and the same
+# PREFECT_API_URL. Trim or replace this manifest to match your
+# production setup — it is intentionally minimal.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag5-api
+  namespace: rag5
+  labels:
+    app.kubernetes.io/name: rag5-api
+    app.kubernetes.io/part-of: rag5
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rag5-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rag5-api
+        app.kubernetes.io/part-of: rag5
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/your-org/rag5:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: UPLOAD_STORAGE_DIR
+              value: "/var/rag5/uploads"
+            # This is the switch that turns on remote dispatch.
+            # Without it the API runs the flow in-process and the
+            # worker pod is idle.
+            - name: PREFECT_INGEST_DEPLOYMENT
+              value: "ingest-document-flow/k8s"
+          envFrom:
+            - secretRef:
+                name: prefect-worker-env
+          volumeMounts:
+            - name: upload-staging
+              mountPath: /var/rag5/uploads
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        - name: upload-staging
+          persistentVolumeClaim:
+            claimName: rag5-upload-staging
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag5-api
+  namespace: rag5
+spec:
+  selector:
+    app.kubernetes.io/name: rag5-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

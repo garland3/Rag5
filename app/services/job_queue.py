@@ -30,11 +30,64 @@ FlowRunner = Callable[..., Awaitable[Any]]
 
 
 def _default_runner() -> FlowRunner:
-    # Imported lazily so tests that monkeypatch the runner don't need
-    # prefect installed or initialised.
+    """Pick the flow runner based on configuration.
+
+    Two execution modes are supported:
+
+    * **In-process** (default, no external worker): returns the
+      ``@flow``-decorated function so the coroutine runs inside the
+      FastAPI event loop. Good for local dev and single-node deploys.
+    * **Remote / deployment-based**: when
+      ``settings.prefect_ingest_deployment`` is set (e.g.
+      ``"ingest-document-flow/k8s"``), returns a wrapper around
+      :func:`prefect.deployments.run_deployment` that submits a flow
+      run to the named deployment. A Prefect worker — typically running
+      in Kubernetes — then picks the run up from its work pool and
+      executes it out-of-process. See ``docs/prefect.md`` for the full
+      setup.
+
+    Imports are lazy so that tests and lightweight dev environments
+    don't need Prefect initialised just to import this module.
+    """
+    from app.config import settings
+
+    deployment_name = settings.prefect_ingest_deployment.strip()
+    if deployment_name:
+        return _make_deployment_runner(deployment_name)
+
     from app.services.prefect_flows import ingest_document_flow
 
     return ingest_document_flow
+
+
+def _make_deployment_runner(deployment_name: str) -> FlowRunner:
+    """Return a runner that submits flow runs to a Prefect deployment.
+
+    The returned coroutine calls ``run_deployment`` with ``timeout=0`` so
+    it returns immediately after the run is created (without waiting for
+    the worker to finish executing it). This keeps the API responsive:
+    ``enqueue_ingest_job`` still returns ``202`` in a few milliseconds,
+    and the worker does the heavy lifting asynchronously.
+    """
+
+    async def runner(**parameters: Any) -> Any:
+        # Lazy import — only pay the cost when this mode is actually used.
+        from prefect.deployments import run_deployment
+
+        flow_run = await run_deployment(
+            name=deployment_name,
+            parameters=parameters,
+            timeout=0,  # fire-and-forget; worker executes asynchronously
+        )
+        logger.info(
+            "Submitted ingest job %s to deployment %s as flow run %s",
+            parameters.get("job_id"),
+            deployment_name,
+            getattr(flow_run, "id", "<unknown>"),
+        )
+        return flow_run
+
+    return runner
 
 
 def _on_task_done(task: asyncio.Task[Any]) -> None:

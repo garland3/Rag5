@@ -1,0 +1,24 @@
+# Shared PVC used to pass uploaded files from the API pod to the
+# Prefect worker pod. Both mount it at /var/rag5/uploads and set
+# UPLOAD_STORAGE_DIR=/var/rag5/uploads.
+#
+# REQUIRED: your cluster needs a StorageClass that supports
+# ReadWriteMany (e.g. EFS on EKS, Filestore on GKE, Azure Files on
+# AKS, NFS). Replace `storageClassName` below accordingly.
+#
+# Alternative: skip this PVC entirely and store uploads in object
+# storage (S3, GCS). That removes the RWX requirement but needs a
+# small code change in `app/services/storage.py` to read/write
+# through an object-store client.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rag5-upload-staging
+  namespace: rag5
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: "" # e.g. efs-sc, filestore-rwx, azurefile-csi

@@ -28,7 +28,7 @@ from prefect import flow, task
 
 from app.core.database import get_db
 from app.services.ingest import ingest_document
-from app.services.storage import read_staged, remove_staged
+from app.services.storage import read_staged_async, remove_staged_async
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,11 @@ async def run_ingest_pipeline(
     )
 
     try:
-        content = read_staged(storage_path)
+        # All blocking file I/O and CPU-bound parsing is offloaded to a
+        # worker thread (see storage.read_staged_async and
+        # ingest.ingest_document) so the ingest flow never blocks the
+        # FastAPI event loop while other API requests are served.
+        content = await read_staged_async(storage_path)
         logger.info(
             "Ingesting %s (%d bytes) into corpus %s",
             filename,
@@ -82,7 +86,7 @@ async def run_ingest_pipeline(
     except Exception as exc:  # noqa: BLE001 - surfaced in job status
         logger.exception("Ingest pipeline failed for job %s", job_id)
         await _update_job(db, job_id, {"status": "failed", "error": str(exc)})
-        remove_staged(storage_path)
+        await remove_staged_async(storage_path)
         raise
 
     await _update_job(
@@ -94,7 +98,7 @@ async def run_ingest_pipeline(
             "completed_at": datetime.utcnow(),
         },
     )
-    remove_staged(storage_path)
+    await remove_staged_async(storage_path)
     logger.info("Job %s completed, document_id=%s", job_id, doc_id)
     return {"job_id": job_id, "document_id": doc_id}
 

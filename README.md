@@ -65,7 +65,9 @@ Typical flow:
 2. `POST /api/v1/documents/upload?corpus_id=<id>` — users upload files as
    `multipart/form-data`. The API:
    - checks write access on the corpus
-   - writes the raw bytes to `UPLOAD_STORAGE_DIR/<stage-id>/<filename>`
+   - writes the raw bytes to `UPLOAD_STORAGE_DIR/<stage-id>/<sanitized-filename>`
+     (the on-disk name is sanitized, so it may not exactly match the original
+     uploaded filename)
    - inserts a record into the `ingest_jobs` Mongo collection with
      `status=queued`
    - submits the `ingest-document-flow` Prefect flow as a background task

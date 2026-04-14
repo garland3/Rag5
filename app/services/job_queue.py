@@ -10,6 +10,7 @@ asyncio task. A reference to every in-flight task is held in
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime
 from typing import Any, Awaitable, Callable
 
@@ -17,7 +18,9 @@ from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.models.job import IngestJobResponse
-from app.services.storage import stage_upload
+from app.services.storage import remove_staged, stage_upload
+
+logger = logging.getLogger(__name__)
 
 # Hold strong references to flow run tasks so they don't get GC'd while
 # running in the background. Tasks self-remove on completion.
@@ -34,9 +37,29 @@ def _default_runner() -> FlowRunner:
     return ingest_document_flow
 
 
+def _on_task_done(task: asyncio.Task[Any]) -> None:
+    """Drop the task from the tracking set and surface any failure.
+
+    Without this, an exception raised inside a background flow run would
+    never be retrieved and would show up as a noisy
+    ``Task exception was never retrieved`` warning in the logs, with no
+    stack trace attached.
+    """
+    _RUNNING_TASKS.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.exception(
+            "Background ingest flow task %s failed",
+            task.get_name(),
+            exc_info=exc,
+        )
+
+
 def _track_task(task: asyncio.Task[Any]) -> None:
     _RUNNING_TASKS.add(task)
-    task.add_done_callback(_RUNNING_TASKS.discard)
+    task.add_done_callback(_on_task_done)
 
 
 async def enqueue_ingest_job(
@@ -54,43 +77,51 @@ async def enqueue_ingest_job(
 
     Returns the job record immediately; the actual ingest runs in the
     background. Raises if file staging or DB insert fails so the caller
-    can surface a proper 5xx to the client.
+    can surface a proper 5xx to the client. Staged files are cleaned up
+    on any pre-dispatch failure so we don't leak files onto disk when
+    the job never gets registered.
     """
     stage_id, storage_path = stage_upload(filename, content)
 
-    now = datetime.utcnow()
-    job_doc = {
-        "corpus_id": ObjectId(corpus_id),
-        "filename": filename,
-        "content_type": content_type,
-        "size_bytes": len(content),
-        "storage_path": storage_path,
-        "stage_id": stage_id,
-        "status": "queued",
-        "document_id": None,
-        "error": None,
-        "created_at": now,
-        "updated_at": now,
-        "created_by": created_by,
-        "metadata": metadata or {},
-        "prefect_flow_run_id": None,
-    }
-    result = await db["ingest_jobs"].insert_one(job_doc)
-    job_id = str(result.inserted_id)
+    try:
+        now = datetime.utcnow()
+        job_doc = {
+            "corpus_id": ObjectId(corpus_id),
+            "filename": filename,
+            "content_type": content_type,
+            "size_bytes": len(content),
+            "storage_path": storage_path,
+            "stage_id": stage_id,
+            "status": "queued",
+            "document_id": None,
+            "error": None,
+            "created_at": now,
+            "updated_at": now,
+            "created_by": created_by,
+            "metadata": metadata or {},
+            "prefect_flow_run_id": None,
+        }
+        result = await db["ingest_jobs"].insert_one(job_doc)
+        job_id = str(result.inserted_id)
 
-    flow_runner = runner or _default_runner()
-    task = asyncio.create_task(
-        flow_runner(
-            job_id=job_id,
-            storage_path=storage_path,
-            filename=filename,
-            content_type=content_type,
-            corpus_id=corpus_id,
-            metadata=metadata or {},
-        ),
-        name=f"ingest-job-{job_id}",
-    )
-    _track_task(task)
+        flow_runner = runner or _default_runner()
+        task = asyncio.create_task(
+            flow_runner(
+                job_id=job_id,
+                storage_path=storage_path,
+                filename=filename,
+                content_type=content_type,
+                corpus_id=corpus_id,
+                metadata=metadata or {},
+            ),
+            name=f"ingest-job-{job_id}",
+        )
+        _track_task(task)
+    except Exception:
+        # Anything before the flow is dispatched owns the staged file.
+        # Clean it up so we don't leak partial uploads onto disk.
+        remove_staged(storage_path)
+        raise
 
     return job_record_to_response({**job_doc, "_id": result.inserted_id})
 

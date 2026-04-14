@@ -8,6 +8,7 @@ GridFS; for local and container use a filesystem directory is enough.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from pathlib import Path
@@ -59,3 +60,13 @@ def remove_staged(storage_path: str) -> None:
     except OSError:
         # Staging cleanup is best-effort; don't fail ingestion over it.
         pass
+
+
+async def read_staged_async(storage_path: str) -> bytes:
+    """Non-blocking wrapper around :func:`read_staged`."""
+    return await asyncio.to_thread(read_staged, storage_path)
+
+
+async def remove_staged_async(storage_path: str) -> None:
+    """Non-blocking wrapper around :func:`remove_staged`."""
+    await asyncio.to_thread(remove_staged, storage_path)

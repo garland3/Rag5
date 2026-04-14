@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -64,6 +65,72 @@ async def test_enqueue_ingest_job_stages_file_and_creates_job(tmp_upload_dir):
     assert runner_called_with["filename"] == "doc.txt"
     assert runner_called_with["corpus_id"] == corpus_id
     assert runner_called_with["storage_path"] == inserted_doc["storage_path"]
+
+
+@pytest.mark.asyncio
+async def test_enqueue_ingest_job_cleans_up_staged_file_on_db_failure(
+    tmp_upload_dir,
+):
+    mock_db = MagicMock()
+    jobs_collection = MagicMock(
+        insert_one=AsyncMock(side_effect=RuntimeError("mongo boom"))
+    )
+    mock_db.__getitem__ = MagicMock(return_value=jobs_collection)
+
+    runner_called = False
+
+    async def fake_runner(**_kwargs):
+        nonlocal runner_called
+        runner_called = True
+
+    with pytest.raises(RuntimeError, match="mongo boom"):
+        await enqueue_ingest_job(
+            mock_db,
+            corpus_id=str(ObjectId()),
+            filename="doc.txt",
+            content_type="text/plain",
+            content=b"payload",
+            created_by="alice@test.com",
+            runner=fake_runner,
+        )
+
+    # The staged file/dir must not be left behind when the insert fails.
+    leftover = [p for p in tmp_upload_dir.rglob("*") if p.is_file()]
+    assert leftover == []
+    assert runner_called is False
+
+
+@pytest.mark.asyncio
+async def test_enqueue_ingest_job_logs_background_task_exception(
+    tmp_upload_dir, caplog
+):
+    mock_db = MagicMock()
+    insert_result = MagicMock(inserted_id=ObjectId())
+    jobs_collection = MagicMock(insert_one=AsyncMock(return_value=insert_result))
+    mock_db.__getitem__ = MagicMock(return_value=jobs_collection)
+
+    async def failing_runner(**_kwargs):
+        raise RuntimeError("flow exploded")
+
+    with caplog.at_level(logging.ERROR, logger="app.services.job_queue"):
+        await enqueue_ingest_job(
+            mock_db,
+            corpus_id=str(ObjectId()),
+            filename="doc.txt",
+            content_type="text/plain",
+            content=b"payload",
+            created_by="alice@test.com",
+            runner=failing_runner,
+        )
+        # Yield so the failing background task runs and the done-callback
+        # fires (and surfaces the exception into the logger).
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    assert any(
+        "flow exploded" in record.getMessage() or "flow exploded" in str(record.exc_info)
+        for record in caplog.records
+    )
 
 
 def test_job_record_to_response_serializes_object_ids():

@@ -20,7 +20,6 @@ class Settings(BaseSettings):
 
     # Prefect orchestration + upload staging
     upload_storage_dir: str = "/tmp/rag5_uploads"
-    prefect_logging: bool = True
 
     model_config = {"env_file": ".env"}
 
